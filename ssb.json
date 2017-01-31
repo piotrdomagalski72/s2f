@@ -1,0 +1,43 @@
+{
+  "stream2": {
+    "s3Location": "sbcotton.ssb-bucket/",
+    "sftpConfig": {
+      "host": "sbcotton.brickftp.com",
+      "port": 2222,
+      "s3PrivateKey": "another-bucket-name/path/to/private_key",
+      "username": "developer"
+    },
+    "sftpLocation": "/dst"
+  },
+  "stream1": {
+    "s3Location": "sbcotton.ftp-outbox/",
+    "sftpConfig": {
+      "host": "sbcotton.brickftp.com",
+      "username": "developer",
+      "password": "developer26"
+    },
+    "sftpLocation": "/upload"
+  },
+  "Iot_Message_Download": {
+    "s3LocationFtpOutbox": "sbcotton.ftp-outbox/",
+    "s3LocationFtpInbox": "sbcotton.ftp-inbox/",
+    "sftpConfig": {
+      "host": "sbcotton.brickftp.com",
+      "username": "developer",
+      "password": "developer26"
+    },
+    "sftpLocationDownload": "/download/notzip",
+    "sftpLocationUpload": "/upload"
+  },
+  "IoT_Msg_Download_Ftp": {
+    "s3LocationFtpOutbox": "aws.lambda.us-west-2.765209894713.ftp-outbox/",
+    "s3LocationFtpInbox": "aws.lambda.us-west-2.765209894713.ftp-inbox/",
+    "sftpConfig": {
+      "host": "sbcotton.brickftp.com",
+      "username": "developer",
+      "password": "developer26"
+    },
+    "sftpLocationDownload": "/download/notzip",
+    "sftpLocationUpload": "/upload"
+  }
+}

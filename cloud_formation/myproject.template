@@ -1,0 +1,289 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Parameters": {
+    "BucketName": {
+      "Type": "String",
+      "Description": "The S3 bucket where you will sync to and from SFTP. This must not already exist."
+    },
+    "Subnets": {
+      "Type": "List<AWS::EC2::Subnet::Id>",
+      "Default": "",
+      "Description": "Choose the subnets in which the Lambda function should run. Must all be in the same VPC."
+    },
+    "SecurityGroups": {
+      "Type": "List<AWS::EC2::SecurityGroup::Id>",
+      "Default": "",
+      "Description": "Choose the security groups in which the Lambda function should run."
+    }
+  },
+  "Resources": {
+    "BridgeRequeue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "MessageRetentionPeriod": 1209600,
+        "QueueName": { "Ref": "AWS::StackName" },
+        "VisibilityTimeout": 60
+      }
+    },
+    "BridgeRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version" : "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [ "lambda.amazonaws.com" ]
+              },
+              "Action": [ "sts:AssumeRole" ]
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "LogWriter",
+            "PolicyDocument": {
+              "Version" : "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "arn:aws:logs:*:*:*"
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "ConfigReader",
+            "PolicyDocument": {
+              "Version" : "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject"
+                  ],
+                  "Resource": { "Fn::Join":  [ "", [ "arn:aws:s3:::aws.lambda.", { "Ref": "AWS::Region" }, ".", { "Ref": "AWS::AccountId" } , ".config/*" ] ] }
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "FileSyncher",
+            "PolicyDocument": {
+              "Version" : "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:CopyObject",
+                    "s3:GetObject",
+                    "s3:ListObjects",
+                    "s3:PutObject"
+                  ],
+                  "Resource": [
+                    { "Fn::Join":  [ "", [ "arn:aws:s3:::", { "Ref": "BucketName" } ] ] },
+                    { "Fn::Join":  [ "", [ "arn:aws:s3:::", { "Ref": "BucketName" } , "/*" ] ] }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "VpcMember",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:CreateNetworkInterface",
+                    "ec2:DescribeNetworkInterfaces",
+                    "ec2:DetachNetworkInterface",
+                    "ec2:DeleteNetworkInterface"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "EventRequeuer",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "sqs:DeleteMessage",
+                    "sqs:GetQueueUrl",
+                    "sqs:ReceiveMessage",
+                    "sqs:SendMessage"
+                  ],
+                  "Resource": { "Fn::GetAtt" : [ "BridgeRequeue", "Arn" ] }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "BridgeFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": "com.gilt.public.backoffice",
+          "S3Key": "lambda_functions/s3-sftp-bridge.zip"
+        },
+        "FunctionName": { "Ref": "AWS::StackName" },
+        "Description": "Used sync files between S3 and SFTP servers.",
+        "Handler": "main.handle",
+        "MemorySize": "256",
+        "Role": { "Fn::GetAtt" : [ "BridgeRole", "Arn" ] },
+        "Runtime": "nodejs4.3",
+        "Timeout": 300,
+        "VpcConfig": {
+          "SecurityGroupIds": { "Ref": "SecurityGroups" },
+          "SubnetIds": { "Ref": "Subnets" }
+        }
+      },
+      "DependsOn": [
+        "BridgeRole"
+      ]
+    },
+    "BridgeResourcePolicy": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": { "Fn::GetAtt": [ "BridgeFunction", "Arn" ] },
+        "Principal": "s3.amazonaws.com",
+        "SourceAccount": { "Ref": "AWS::AccountId" },
+        "SourceArn": { "Fn::Join" : ["", [ "arn:aws:s3:::", { "Ref" : "BucketName" } ] ] }
+      },
+      "DependsOn": [
+        "BridgeFunction"
+      ]
+    },
+    "BridgeBucket": {
+      "Type" : "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": { "Ref": "BucketName" },
+        "NotificationConfiguration": {
+          "LambdaConfigurations": [
+            {
+              "Event": "s3:ObjectCreated:*",
+              "Function": { "Fn::GetAtt": [ "BridgeFunction", "Arn" ] }
+            }
+          ]
+        }
+      },
+      "DependsOn": [
+        "BridgeResourcePolicy"
+      ]
+    },
+    "FunctionTimeoutMetric": {
+      "Type": "AWS::Logs::MetricFilter",    
+      "Properties": {
+        "FilterPattern": "Task timed out",
+        "LogGroupName": { "Fn::Join" : ["", [ "/aws/lambda/", { "Ref" : "BridgeFunction" } ] ] },
+        "MetricTransformations": [
+          {
+            "MetricValue": "1",
+            "MetricNamespace": { "Ref": "AWS::StackName" },
+            "MetricName": "lambda-function-timeouts"
+          }
+        ]
+      },
+      "DependsOn": [
+        "BridgeFunction"
+      ]
+    },
+    "ConnectionTimeoutMetric": {
+      "Type": "AWS::Logs::MetricFilter",    
+      "Properties": {
+        "FilterPattern": "ClientTimeoutException",
+        "LogGroupName": { "Fn::Join" : ["", [ "/aws/lambda/", { "Ref" : "BridgeFunction" } ] ] },
+        "MetricTransformations": [
+          {
+            "MetricValue": "1",
+            "MetricNamespace": { "Ref": "AWS::StackName" },
+            "MetricName": "connection-timeouts"
+          }
+        ]
+      },
+      "DependsOn": [
+        "BridgeFunction"
+      ]
+    },
+    "ErrorMetric": {
+      "Type": "AWS::Logs::MetricFilter",    
+      "Properties": {
+        "FilterPattern": "UnknownException",
+        "LogGroupName": { "Fn::Join" : ["", [ "/aws/lambda/", { "Ref" : "BridgeFunction" } ] ] },
+        "MetricTransformations": [
+          {
+            "MetricValue": "1",
+            "MetricNamespace": { "Ref": "AWS::StackName" },
+            "MetricName": "errors"
+          }
+        ]
+      },
+      "DependsOn": [
+        "BridgeFunction"
+      ]
+    },
+    "S3toSFTPMetric": {
+      "Type": "AWS::Logs::MetricFilter",    
+      "Properties": {
+        "FilterPattern": "[timestamp, requestId, streamName, colon, moved = Moved, numFiles, files = files, from, orig = S3, to, dest = SFTP]",
+        "LogGroupName": { "Fn::Join" : ["", [ "/aws/lambda/", { "Ref" : "BridgeFunction" } ] ] },
+        "MetricTransformations": [
+          {
+            "MetricValue": "$numFiles",
+            "MetricNamespace": { "Ref": "AWS::StackName" },
+            "MetricName": "s3-to-sftp"
+          }
+        ]
+      },
+      "DependsOn": [
+        "BridgeFunction"
+      ]
+    },
+    "SFTPtoS3Metric": {
+      "Type": "AWS::Logs::MetricFilter",    
+      "Properties": {
+        "FilterPattern": "[timestamp, requestId, streamName, colon, moved = Moved, numFiles, files = files, from, orig = SFTP, to, dest = S3]",
+        "LogGroupName": { "Fn::Join" : ["", [ "/aws/lambda/", { "Ref" : "BridgeFunction" } ] ] },
+        "MetricTransformations": [
+          {
+            "MetricValue": "$numFiles",
+            "MetricNamespace": { "Ref": "AWS::StackName" },
+            "MetricName": "sftp-to-s3"
+          }
+        ]
+      },
+      "DependsOn": [
+        "BridgeFunction"
+      ]
+    }
+  },
+  "Outputs": {
+    "BridgeFunctionArn": {
+      "Description": "The ARN of the function that moves files between S3 and SFTP.",
+      "Value": { "Fn::GetAtt": [ "BridgeFunction", "Arn" ] }
+    },
+    "BridgeFunctionName": {
+      "Description": "The ARN of the function that moves files between S3 and SFTP.",
+      "Value": { "Ref": "BridgeFunction" }
+    },
+    "BridgeFunctionRole": {
+      "Description": "The role used by the generated Lambda function, to be added to any KMS keys.",
+      "Value": { "Ref": "BridgeRole" }
+    }
+  }
+}
